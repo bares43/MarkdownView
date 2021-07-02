@@ -11,11 +11,16 @@
     using Markdig;
     using Markdig.Syntax;
     using Markdig.Syntax.Inlines;
+    using Xamarin.Essentials;
     using Xamarin.Forms;
 
     public class MarkdownView : ContentView
     {
-        public Action<string> NavigateToLink { get; set; } = (s) => Device.OpenUri(new Uri(s));
+        public Action<string> NavigateToLink { get; set; } = async (s) => await Browser.OpenAsync(s);
+
+        const string youTubeWatchPattern = @"https?:\/\/www\.youtube\.com\/watch\?v=([^&]+)&?";
+        const string youTubePattern = @"https?:\/\/youtu\.be/([^&]+)&?";
+        const string youTubeCookiePattern = @"https?:\/\/www\.youtube-nocookie\.com\/embed\/([^&]+)&?";
 
         public static MarkdownTheme Global = new LightMarkdownTheme();
 
@@ -23,31 +28,30 @@
 
         public string Markdown
         {
-            get { return (string)GetValue(MarkdownProperty); }
-            set { SetValue(MarkdownProperty, value); }
+            get => (string)GetValue(MarkdownProperty);
+            set => SetValue(MarkdownProperty, value);
         }
 
         public static readonly BindableProperty MarkdownProperty = BindableProperty.Create(nameof(Markdown), typeof(string), typeof(MarkdownView), null, propertyChanged: OnMarkdownChanged);
 
         public string RelativeUrlHost
         {
-            get { return (string)GetValue(RelativeUrlHostProperty); }
-            set { SetValue(RelativeUrlHostProperty, value); }
+            get => (string)GetValue(RelativeUrlHostProperty);
+            set => SetValue(RelativeUrlHostProperty, value);
         }
 
         public static readonly BindableProperty RelativeUrlHostProperty = BindableProperty.Create(nameof(RelativeUrlHost), typeof(string), typeof(MarkdownView), null, propertyChanged: OnMarkdownChanged);
 
         public MarkdownTheme Theme
         {
-            get { return (MarkdownTheme)GetValue(ThemeProperty); }
-            set { SetValue(ThemeProperty, value); }
+            get => (MarkdownTheme)GetValue(ThemeProperty);
+            set => SetValue(ThemeProperty, value);
         }
 
         public static readonly BindableProperty ThemeProperty = BindableProperty.Create(nameof(Theme), typeof(MarkdownTheme), typeof(MarkdownView), Global, propertyChanged: OnMarkdownChanged);
 
         bool isQuoted;
-
-        List<View> queuedViews = new List<View>();
+        readonly List<View> queuedViews = new List<View>();
 
         static void OnMarkdownChanged(BindableObject bindable, object oldValue, object newValue)
         {
@@ -101,40 +105,48 @@
 
         void AttachLinks(View view)
         {
-            if (links.Any())
+            if (!links.Any())
             {
-                var blockLinks = links.Select(o => new LinkData { Text = o.Key, Link = o.Value }).ToList();
-                view.GestureRecognizers.Add(new TapGestureRecognizer
+                return;
+            }
+
+            var blockLinks = links.Select(o => new LinkData { Text = o.Key, Link = o.Value }).ToList();
+            view.GestureRecognizers.Add(new TapGestureRecognizer
+            {
+                Command = new Command(async () =>
                 {
-                    Command = new Command(async () =>
+                    try
                     {
-                        try
+                        if (Theme.Link.CustomTapHandler != null)
                         {
-                            if (Theme.Link.CustomTapHandler != null)
+                            Theme.Link.CustomTapHandler.Invoke(blockLinks);
+                        }
+                        else
+                        {
+                            LinkData link = null;
+                            if (blockLinks.Count > 1)
                             {
-                                Theme.Link.CustomTapHandler.Invoke(blockLinks);
+                                var result = await Application.Current.MainPage.DisplayActionSheet(Theme.Link.OpenLinkSheetTitle, Theme.Link.OpenLinkSheetCancel, null, blockLinks.Select(x => x.Text).ToArray());
+                                blockLinks.FirstOrDefault(x => x.Text == result);
                             }
                             else
                             {
-                                if (blockLinks.Count > 1)
-                                {
-                                    var result = await Application.Current.MainPage.DisplayActionSheet(Theme.Link.OpenLinkSheetTitle, Theme.Link.OpenLinkSheetCancel, null, blockLinks.Select(x => x.Text).ToArray());
-                                    var link = blockLinks.FirstOrDefault(x => x.Text == result);
-                                    NavigateToLink(link.Link);
-                                }
-                                else
-                                {
-                                    NavigateToLink(blockLinks.First().Link);
-                                }
+                                link = blockLinks.FirstOrDefault();
                             }
 
+                            if (link != null)
+                                NavigateToLink(link.Link);
                         }
-                        catch (Exception) { }
-                    }),
-                });
 
-                links = new List<KeyValuePair<string, string>>();
-            }
+                    }
+                    catch (Exception ex) 
+                    {
+                        Debug.WriteLine(ex);
+                    }
+                }),
+            });
+
+            links = new List<KeyValuePair<string, string>>();
         }
 
         #region Rendering blocks
@@ -176,28 +188,29 @@
                     break;
             }
 
-            if (queuedViews.Any())
+            if (!queuedViews.Any())
             {
-                foreach (var view in queuedViews)
-                {
-                    stack.Children.Add(view);
-                }
-                queuedViews.Clear();
+                return;
             }
+
+            queuedViews.ForEach(v => stack.Children.Add(v));
+            queuedViews.Clear();
         }
 
         void Render(ThematicBreakBlock block)
         {
             var style = Theme.Separator;
 
-            if (style.BorderSize > 0)
+            if (style.BorderSize <= 0)
             {
-                stack.Children.Add(new BoxView
-                {
-                    HeightRequest = style.BorderSize,
-                    BackgroundColor = style.BorderColor,
-                });
+                return;
             }
+
+            stack.Children.Add(new BoxView
+            {
+                HeightRequest = style.BorderSize,
+                BackgroundColor = style.BorderColor,
+            });
         }
 
         void Render(ListBlock block)
@@ -297,7 +310,8 @@
                     VerticalOptions = listTheme.BulletVerticalOptions,
                 };
             }
-            else if (listTheme.BulletStyleType == ListStyleType.Square || listTheme.BulletStyleType == ListStyleType.Circle)
+            
+            if (listTheme.BulletStyleType == ListStyleType.Square || listTheme.BulletStyleType == ListStyleType.Circle)
             {
                 var bullet = new Frame
                 {
@@ -323,29 +337,15 @@
 
         void Render(HeadingBlock block)
         {
-            MarkdownStyle style;
-
-            switch (block.Level)
+            var style = block.Level switch
             {
-                case 1:
-                    style = Theme.Heading1;
-                    break;
-                case 2:
-                    style = Theme.Heading2;
-                    break;
-                case 3:
-                    style = Theme.Heading3;
-                    break;
-                case 4:
-                    style = Theme.Heading4;
-                    break;
-                case 5:
-                    style = Theme.Heading5;
-                    break;
-                default:
-                    style = Theme.Heading6;
-                    break;
-            }
+                1 => Theme.Heading1,
+                2 => Theme.Heading2,
+                3 => Theme.Heading3,
+                4 => Theme.Heading4,
+                5 => Theme.Heading5,
+                _ => Theme.Heading6,
+            };
 
             var foregroundColor = isQuoted ? Theme.Quote.ForegroundColor : style.ForegroundColor;
 
@@ -391,7 +391,7 @@
 
         void Render(HtmlBlock block)
         {
-            // ?
+            //TODO: ?
         }
 
         void Render(QuoteBlock block)
@@ -627,9 +627,9 @@
 
             var reg = new List<Regex>
             {
-                new Regex(@"https?:\/\/www\.youtube\.com\/watch\?v=([^&]+)&?"),
-                new Regex(@"https?:\/\/youtu\.be/([^&]+)&?"),
-                new Regex(@"https?:\/\/www\.youtube-nocookie\.com\/embed\/([^&]+)&?"),
+                new Regex(youTubeWatchPattern),
+                new Regex(youTubePattern),
+                new Regex(youTubeCookiePattern),
             };
 
             var match = reg.Select(o => o.Match(url)).FirstOrDefault(o => o.Success);
@@ -712,7 +712,10 @@
 
                 return ImageSource.FromStream(() => new MemoryStream(byteArray));
             }
-            catch (Exception) { }
+            catch (Exception ex) 
+            {
+                Debug.WriteLine(ex);
+            }
 
             return null;
         }

@@ -6,6 +6,7 @@
     {
         public FontAttributes Attributes { get; set; } = FontAttributes.None;
 
+        // TODO: can this be named font size stuff?
         public float FontSize { get; set; } = 12;
 
         public float LineHeight { get; set; } = -1;

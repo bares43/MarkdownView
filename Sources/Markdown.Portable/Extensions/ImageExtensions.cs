@@ -19,25 +19,21 @@
                 req.BeginGetResponse((ar) =>
                 {
                     var res = (ar.AsyncState as HttpWebRequest).EndGetResponse(ar) as HttpWebResponse;
-                    using (var stream = res.GetResponseStream())
+                    using var stream = res.GetResponseStream();
+                    if (stream != null)
                     {
-                        if (stream != null)
+                        var picture = svg.Load(stream);
+
+                        using var image = SKImage.FromPicture(picture, picture.CullRect.Size.ToSizeI());
+                        using var data = image.Encode(SKEncodedImageFormat.Jpeg, 80);
+                        var ms = new MemoryStream();
+
+                        if (data != null && !data.IsEmpty)
                         {
-                            var picture = svg.Load(stream);
-
-                            using (var image = SKImage.FromPicture(picture, picture.CullRect.Size.ToSizeI()))
-                            using (var data = image.Encode(SKEncodedImageFormat.Jpeg, 80))
-                            {
-                                var ms = new MemoryStream();
-
-                                if (data != null && !data.IsEmpty)
-                                {
-                                    data.SaveTo(ms);
-                                    ms.Seek(0, SeekOrigin.Begin);
-                                    ms.Position = 0;
-                                    view.Source = ImageSource.FromStream(() => ms);
-                                }
-                            }
+                            data.SaveTo(ms);
+                            ms.Seek(0, SeekOrigin.Begin);
+                            ms.Position = 0;
+                            view.Source = ImageSource.FromStream(() => ms);
                         }
                     }
                 }, req);
